@@ -81,15 +81,19 @@ fn openThread(exe_: std.process.Child) void {
         var buffer: [256]u8 = undefined;
         var stream = stderr.readerStreaming(&buffer);
         const reader = &stream.interface;
+        // Use `takeDelimiter`, not `takeDelimiterExclusive`. The latter stops
+        // *before* the delimiter by design (it leaves the '\n' in the buffer),
+        // so looping on it never advances past a newline-terminated line: it
+        // spins forever logging an empty line and never reaches `wait()` below,
+        // pinning a CPU and leaking the child as a zombie. `takeDelimiter`
+        // consumes the delimiter, excludes it from the result, and returns null
+        // at end of stream.
         while (true) {
-            const line = reader.takeDelimiterExclusive('\n') catch |outer| switch (outer) {
-                error.EndOfStream => break,
+            const line = (reader.takeDelimiter('\n') catch |err| switch (err) {
                 error.ReadFailed => break,
-                error.StreamTooLong => reader.take(buffer.len) catch |inner| switch (inner) {
-                    error.ReadFailed => break,
-                    error.EndOfStream => break,
-                },
-            };
+                // Line longer than the buffer: log the chunk we have and continue.
+                error.StreamTooLong => reader.take(buffer.len) catch break,
+            }) orelse break;
             log.warn("open stderr={s}", .{line});
         }
     }
